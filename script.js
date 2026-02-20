@@ -1,8 +1,9 @@
-
 /***********************
  * CONFIG
  ***********************/
-let url = "url secret cobra";
+let url =
+    "url cobra secret";
+
 let contratsTable = base.getTable("ContratsImport");
 let vehiculeTable = base.getTable("Véhicules");
 
@@ -108,7 +109,7 @@ for (let record of airtableVehicules.records) {
 }
 
 /***********************
- * INDEX CONTRATS EXISTANTS
+ * INDEX CONTRATS EXISTANTS AIRTABLE
  ***********************/
 let existingContrats = await contratsTable.selectRecordsAsync();
 let contratsByNum = {};
@@ -131,6 +132,9 @@ let updatedIds = new Set();
 // Anti doublons create dans le même run
 let createdNums = new Set();
 
+// Pour suppression : on stocke tous les contrats trouvés dans Cobra
+let cobraNums = new Set();
+
 // DEBUG counters
 let ignoredNoStartDate = 0;
 let ignoredNoVehiculeMap = 0;
@@ -143,8 +147,11 @@ for (let item of data.data) {
         continue;
     }
 
-    // IMPORTANT : si pas de NumContrat, on met un identifiant unique basé sur l'id Cobra
+    // NumContrat unique
     let numContrat = item.NumContrat ? item.NumContrat : ("ID-" + item.id);
+
+    // on garde trace de tous les contrats présents dans Cobra
+    cobraNums.add(numContrat);
 
     // éviter doublons de création dans le même run
     if (createdNums.has(numContrat)) {
@@ -167,10 +174,15 @@ for (let item of data.data) {
         ignoredPlaqueNotInAirtable++;
         continue;
     }
+    
+    if( stripHtml(item.text) === "&nbsp;"){
+        item.text = "indisponibilité"
+    }
 
     let fieldsPayload = {
         "Nom Client": stripHtml(item.text || "Client inconnu"),
         vehicules: [{ id: vehiculeRecordId }],
+        idcobra : item.id,
         DateDebut: new Date(item.start_date),
         DateFin: item.end_date ? new Date(item.end_date) : null,
     };
@@ -208,13 +220,28 @@ for (let item of data.data) {
 }
 
 /***********************
+ * SUPPRESSION DES CONTRATS QUI N'EXISTENT PLUS DANS COBRA
+ ***********************/
+let recordsToDelete = [];
+
+for (let record of existingContrats.records) {
+    let num = record.getCellValueAsString("NumContrat");
+    if (!num) continue;
+
+    if (!cobraNums.has(num)) {
+        recordsToDelete.push(record.id);
+    }
+}
+
+/***********************
  * SAUVEGARDE DES COMPTEURS
  ***********************/
 let totalCreate = recordsToCreate.length;
 let totalUpdate = recordsToUpdate.length;
+let totalDelete = recordsToDelete.length;
 
 /***********************
- * INSERTION / UPDATE
+ * INSERTION / UPDATE / DELETE
  ***********************/
 while (recordsToCreate.length) {
     await contratsTable.createRecordsAsync(recordsToCreate.splice(0, 50));
@@ -224,15 +251,19 @@ while (recordsToUpdate.length) {
     await contratsTable.updateRecordsAsync(recordsToUpdate.splice(0, 50));
 }
 
+while (recordsToDelete.length) {
+    await contratsTable.deleteRecordsAsync(recordsToDelete.splice(0, 50));
+}
+
 /***********************
  * FIN + DEBUG
  ***********************/
 output.set("Créés", totalCreate);
 output.set("Mis à jour", totalUpdate);
+output.set("Supprimés", totalDelete);
 output.set("Inchangés", skipped);
 
 output.set("Ignorés - pas de start_date", ignoredNoStartDate);
 output.set("Ignorés - véhicule introuvable Cobra", ignoredNoVehiculeMap);
 output.set("Ignorés - pas de plaque", ignoredNoPlaque);
 output.set("Ignorés - plaque absente Airtable", ignoredPlaqueNotInAirtable);
-
